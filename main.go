@@ -4,15 +4,16 @@ import (
 	"crypto/ecdsa"
 	"encoding/json"
 	"fmt"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
+	"io"
 	"io/ioutil"
 	"log"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
 	"sync"
-
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 var (
@@ -20,11 +21,6 @@ var (
 	mutex    sync.Mutex
 	wg       sync.WaitGroup
 )
-
-type config struct {
-	Continuous         int      `json:"continuous"`
-	DreamAddressSubstr []string `json:"dreamAddressSubstr"`
-}
 
 func main() {
 	var f *os.File
@@ -60,17 +56,18 @@ func main() {
 		jsonFile.Close()
 		threadNum := CPUNum - 1
 		wg.Add(1)
+		sendMessageBybark("开始生成", "开始生成", con.BarkUrl, con.BarkKey)
 		for i := 0; i < threadNum; i++ {
-			go createWallet(con.Continuous, con.DreamAddressSubstr)
+			go createWallet(con)
 		}
 		wg.Wait()
 	}
 }
 
-func createWallet(strLen int, strSubstr []string) {
+func createWallet(con config) {
 	var f *os.File
 	f, _ = os.OpenFile(filename, os.O_APPEND, 0666) //打开文件
-	str_length := strLen
+	str_length := con.Continuous
 	for {
 		privateKey, err := crypto.GenerateKey()
 		if err != nil {
@@ -89,8 +86,9 @@ func createWallet(strLen int, strSubstr []string) {
 		if strings.Count(endstr, string(endstr[0])) >= str_length {
 			isGood = true
 		}
-		for _, valueStr := range strSubstr {
-			if strings.Contains(address, valueStr) {
+		for _, valueStr := range con.DreamAddressSubstr {
+			//后缀是valueStr
+			if strings.HasSuffix(address, valueStr) {
 				isGood = true
 				break
 			}
@@ -98,6 +96,7 @@ func createWallet(strLen int, strSubstr []string) {
 		if isGood {
 			mutex.Lock()
 			fmt.Println(address)
+			sendMessageBybark("生成一个Address", address, con.BarkUrl, con.BarkKey)
 			privateKeyBytes := crypto.FromECDSA(privateKey)
 			fmt.Println(hexutil.Encode(privateKeyBytes)[2:])
 			f.WriteString(address)
@@ -117,4 +116,31 @@ func checkFileIsExist(filename string) bool {
 		return false
 	}
 	return true
+}
+
+func sendMessageBybark(title, mess, barkUrl, barkKey string) {
+	/*            data=json.dumps ({
+	              "body": mess,
+	              "device_key": barkKey,
+	              "title": title,
+	          })*/
+	var data = []byte(`{"body":"` + mess + `","device_key":"` + barkKey + `","title":"` + title + `"}`)
+	response, err := http.Post(barkUrl, "application/json; charset=utf-8",
+		strings.NewReader(string(data)))
+	if err != nil {
+		fmt.Println("failed to post", err)
+	} else {
+		defer func(Body io.ReadCloser) {
+			err := Body.Close()
+			if err != nil {
+				fmt.Println("failed to close response body", err)
+			}
+		}(response.Body)
+		body, err := ioutil.ReadAll(response.Body)
+		if err != nil {
+			fmt.Println("failed to read response body", err)
+		} else {
+			fmt.Println(string(body))
+		}
+	}
 }

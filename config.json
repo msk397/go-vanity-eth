@@ -1,4 +1,6 @@
 {
   "continuous":8,
-  "dreamAddressSubstr":["1234test","1234asd","13"]
+  "dreamAddressSubstr":["030702140409","021403070409","msk397"],
+  "barkUrl": "****",
+  "barkKey": "****"
 }
