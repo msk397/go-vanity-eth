@@ -2,29 +2,32 @@ package main
 
 import (
 	"crypto/ecdsa"
-	"encoding/json"
 	"fmt"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
 	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 var (
 	filename = "./wallet.txt"
 	mutex    sync.Mutex
 	wg       sync.WaitGroup
+	genNum   int
 )
 
 func main() {
 	var f *os.File
 	CPUNum := runtime.NumCPU()
+	threadNumChan := make(chan int, CPUNum)
 	if checkFileIsExist(filename) { //如果文件存在
 		f, _ = os.OpenFile(filename, os.O_APPEND, 0666) //打开文件
 		fmt.Println("文件存在")
@@ -39,36 +42,79 @@ func main() {
 	fmt.Println("开始生成……")
 
 	f.Close()
-	// 打开json文件
-	jsonFile, err := os.Open("config.json")
 
-	// 最好要处理以下错误
+	con, err := readConfig()
 	if err != nil {
-		fmt.Println("config.json文件不存在，请查看该文件")
-	} else {
-		byteValue, _ := ioutil.ReadAll(jsonFile)
-		var con config
-
-		err := json.Unmarshal([]byte(byteValue), &con)
-		if err != nil {
-			fmt.Println("config.json文件错误，请查看该文件")
-		}
-		jsonFile.Close()
-		threadNum := CPUNum - 1
-		wg.Add(1)
-		sendMessageBybark("开始生成", "开始生成", con.BarkUrl, con.BarkKey)
-		for i := 0; i < threadNum; i++ {
-			go createWallet(con)
-		}
-		wg.Wait()
+		fmt.Println("读取配置文件失败")
+		return
 	}
+
+	threadNum := int(math.Floor(float64(CPUNum-1) * con.Rate))
+	fmt.Println("本次生成线程数:", threadNum)
+	wg.Add(1)
+	sendMessageBybark("开始生成", "开始生成", con.BarkUrl, con.BarkKey)
+	for i := 0; i < threadNum; i++ {
+		go createWallet(con, threadNumChan)
+		genNum++
+	}
+
+	go DynamicSetThreadNum(con, threadNumChan, CPUNum)
+	go GetThreadNum()
+	wg.Wait()
 }
 
-func createWallet(con config) {
+func GetThreadNum() {
+	for {
+		time.Sleep(time.Second * 3)
+		fmt.Println("GetThreadNum 当前生成使用的协程数:", genNum)
+	}
+}
+func DynamicSetThreadNum(con config, threadNumChan chan int, CPUNum int) {
+	tmpRate := con.Rate
+	for {
+		select {
+		case <-time.After(time.Second * 3):
+			con, err := readConfig()
+			if err != nil {
+				fmt.Println("读取配置文件失败")
+				return
+			}
+			if tmpRate == con.Rate {
+				continue
+			} else {
+				tmpRate = con.Rate
+			}
+			threadNum := int(math.Floor(float64(CPUNum-1) * con.Rate))
+			fmt.Println("DynamicSetThreadNum 当前生成地址的协程数:", genNum)
+			fmt.Printf("DynamicSetThreadNum 本次需要生成线程数:%d,还需生成%d\n", threadNum, threadNum-genNum)
+			needNum := threadNum - genNum
+			if needNum > 0 {
+				fmt.Println("线程数不足，开始创建新线程")
+				for i := 0; i < needNum; i++ {
+					genNum++
+					go createWallet(con, threadNumChan)
+				}
+			} else if needNum < 0 {
+				for i := 0; i > needNum; i-- {
+					genNum--
+					threadNumChan <- 1
+				}
+			}
+		}
+	}
+
+}
+
+func createWallet(con config, threadNumChan <-chan int) {
 	var f *os.File
 	f, _ = os.OpenFile(filename, os.O_APPEND, 0666) //打开文件
 	str_length := con.Continuous
 	for {
+		select {
+		case <-threadNumChan:
+			return
+		default:
+		}
 		privateKey, err := crypto.GenerateKey()
 		if err != nil {
 			log.Fatal(err)
@@ -96,7 +142,7 @@ func createWallet(con config) {
 		if isGood {
 			mutex.Lock()
 			fmt.Println(address)
-			sendMessageBybark("生成一个Address", address, con.BarkUrl, con.BarkKey)
+			go sendMessageBybark("生成一个Address", address, con.BarkUrl, con.BarkKey)
 			privateKeyBytes := crypto.FromECDSA(privateKey)
 			fmt.Println(hexutil.Encode(privateKeyBytes)[2:])
 			f.WriteString(address)
@@ -119,11 +165,9 @@ func checkFileIsExist(filename string) bool {
 }
 
 func sendMessageBybark(title, mess, barkUrl, barkKey string) {
-	/*            data=json.dumps ({
-	              "body": mess,
-	              "device_key": barkKey,
-	              "title": title,
-	          })*/
+	if barkUrl == "" || barkKey == "" {
+		return
+	}
 	var data = []byte(`{"body":"` + mess + `","device_key":"` + barkKey + `","title":"` + title + `"}`)
 	response, err := http.Post(barkUrl, "application/json; charset=utf-8",
 		strings.NewReader(string(data)))

@@ -12,6 +12,10 @@ ETH靓号地址生成器，使用 github.com/ethereum/go-ethereum 的方法生�
 
 continuous是连续的位数，比如8，意味着生成的地址尾部中必须有不少于8个连续的相同字符，dreamAddressSubstr是要求生成地址中有相同的字符串
 注意地址长度，不要超出
+barkURL是bark推送地址，可以不填，不填就不推送
+barkKey是bark推送的key
+rate是控制CPU的使用率，范围是0-1，比如0.5，意味着使用大约50%的CPU
+rate是可以动态控制的，意味着，你在运行的情况下可以动态调整
 ## 使用
 
 ```
