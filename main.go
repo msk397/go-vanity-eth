@@ -27,8 +27,8 @@ var (
 func main() {
 	var f *os.File
 	CPUNum := runtime.NumCPU()
-	threadNumChan := make(chan int, CPUNum)
-	if checkFileIsExist(filename) { //如果文件存在
+	threadNumChan := make(chan struct{}, CPUNum)
+	if err := checkFileIsExist(filename); err == nil { //如果文件存在
 		f, _ = os.OpenFile(filename, os.O_APPEND, 0666) //打开文件
 		fmt.Println("文件存在")
 	} else {
@@ -50,7 +50,7 @@ func main() {
 	}
 
 	threadNum := int(math.Floor(float64(CPUNum-1) * con.Rate))
-	fmt.Println("本次生成线程数:", threadNum)
+	fmt.Println("本次生成协程数:", threadNum)
 	wg.Add(1)
 	sendMessageBybark("开始生成", "开始生成", con.BarkUrl, con.BarkKey)
 	for i := 0; i < threadNum; i++ {
@@ -59,35 +59,31 @@ func main() {
 	}
 
 	go DynamicSetThreadNum(con, threadNumChan, CPUNum)
-	go GetThreadNum()
 	wg.Wait()
 }
 
-func GetThreadNum() {
-	for {
-		time.Sleep(time.Second * 3)
-		fmt.Println("GetThreadNum 当前生成使用的协程数:", genNum)
-	}
-}
-func DynamicSetThreadNum(con config, threadNumChan chan int, CPUNum int) {
+func DynamicSetThreadNum(con config, threadNumChan chan struct{}, CPUNum int) {
 	tmpRate := con.Rate
 	for {
 		select {
-		case <-time.After(time.Second * 3):
+		case <-time.After(time.Second * 30):
+			fmt.Println("GetThreadNum 当前生成使用的协程数:", genNum)
 			con, err := readConfig()
 			if err != nil {
 				fmt.Println("读取配置文件失败")
 				return
 			}
+
 			if tmpRate == con.Rate {
 				continue
-			} else {
-				tmpRate = con.Rate
 			}
+			tmpRate = con.Rate
+
 			threadNum := int(math.Floor(float64(CPUNum-1) * con.Rate))
-			fmt.Println("DynamicSetThreadNum 当前生成地址的协程数:", genNum)
-			fmt.Printf("DynamicSetThreadNum 本次需要生成线程数:%d,还需生成%d\n", threadNum, threadNum-genNum)
 			needNum := threadNum - genNum
+			fmt.Println("DynamicSetThreadNum 当前生成地址的协程数:", genNum)
+			fmt.Printf("DynamicSetThreadNum 本次需要生成线程数:%d,还需生成%d\n", threadNum, needNum)
+
 			if needNum > 0 {
 				fmt.Println("线程数不足，开始创建新线程")
 				for i := 0; i < needNum; i++ {
@@ -97,22 +93,22 @@ func DynamicSetThreadNum(con config, threadNumChan chan int, CPUNum int) {
 			} else if needNum < 0 {
 				for i := 0; i > needNum; i-- {
 					genNum--
-					threadNumChan <- 1
+					threadNumChan <- struct{}{}
 				}
 			}
 		}
 	}
-
 }
 
-func createWallet(con config, threadNumChan <-chan int) {
+func createWallet(con config, threadNumChan <-chan struct{}) {
 	var f *os.File
 	f, _ = os.OpenFile(filename, os.O_APPEND, 0666) //打开文件
-	str_length := con.Continuous
+	defer f.Close()
+	strLength := con.Continuous
 	for {
 		select {
 		case <-threadNumChan:
-			return
+			runtime.Goexit()
 		default:
 		}
 		privateKey, err := crypto.GenerateKey()
@@ -128,8 +124,8 @@ func createWallet(con config, threadNumChan <-chan int) {
 
 		address := crypto.PubkeyToAddress(*publicKeyECDSA).Hex()
 		isGood := false
-		endstr := address[42-str_length : 42]
-		if strings.Count(endstr, string(endstr[0])) >= str_length {
+		endstr := address[42-strLength : 42]
+		if strings.Count(endstr, string(endstr[0])) >= strLength {
 			isGood = true
 		}
 		for _, valueStr := range con.DreamAddressSubstr {
@@ -144,7 +140,7 @@ func createWallet(con config, threadNumChan <-chan int) {
 			fmt.Println(address)
 			go sendMessageBybark("生成一个Address", address, con.BarkUrl, con.BarkKey)
 			privateKeyBytes := crypto.FromECDSA(privateKey)
-			fmt.Println(hexutil.Encode(privateKeyBytes)[2:])
+			//fmt.Println(hexutil.Encode(privateKeyBytes)[2:])
 			f.WriteString(address)
 			f.WriteString("\n")
 			f.WriteString(hexutil.Encode(privateKeyBytes)[2:])
@@ -157,11 +153,11 @@ func createWallet(con config, threadNumChan <-chan int) {
 	}
 }
 
-func checkFileIsExist(filename string) bool {
+func checkFileIsExist(filename string) error {
 	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		return false
+		return err
 	}
-	return true
+	return nil
 }
 
 func sendMessageBybark(title, mess, barkUrl, barkKey string) {

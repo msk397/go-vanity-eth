@@ -23,14 +23,16 @@ func readConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	} else {
+		defer jsonFile.Close()
 		byteValue, _ := ioutil.ReadAll(jsonFile)
 		var con config
 
 		err := json.Unmarshal([]byte(byteValue), &con)
+
 		if err != nil {
 			return config{}, err
 		}
-		jsonFile.Close()
+
 		if con.Rate > 1 {
 			con.Rate = 1
 		}
