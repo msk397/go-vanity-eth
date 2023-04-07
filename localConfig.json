@@ -1,0 +1,6 @@
+{
+  "remoteConfig": "这里填入你的远程文件地址或本地文件地址",
+  "barkUrl": "这里填入你的bark地址，注意是post格式",
+  "barkKey": "这里填入你的bark key",
+  "rate": 1
+}

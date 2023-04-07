@@ -5,12 +5,10 @@ import (
 	"fmt"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"io"
-	"io/ioutil"
 	"log"
 	"math"
-	"net/http"
 	"os"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -43,16 +41,16 @@ func main() {
 
 	f.Close()
 
-	con, err := readConfig()
+	con, err := readConfigAll()
 	if err != nil {
 		fmt.Println("读取配置文件失败")
 		return
 	}
 
-	threadNum := int(math.Floor(float64(CPUNum-1) * con.Rate))
+	threadNum := int(math.Floor(float64(CPUNum-1) * con.LocalConfig.Rate))
 	fmt.Println("本次生成协程数:", threadNum)
 	wg.Add(1)
-	sendMessageBybark("开始生成", "开始生成", con.BarkUrl, con.BarkKey)
+	sendMessageBybark("开始生成", "开始生成", con.LocalConfig.BarkUrl, con.LocalConfig.BarkKey)
 	for i := 0; i < threadNum; i++ {
 		go createWallet(con, threadNumChan)
 		genNum++
@@ -62,49 +60,70 @@ func main() {
 	wg.Wait()
 }
 
-func DynamicSetThreadNum(con config, threadNumChan chan struct{}, CPUNum int) {
-	tmpRate := con.Rate
+func DynamicSetThreadNum(con Config, threadNumChan chan struct{}, CPUNum int) {
+	tmpConfig := Config{}
 	for {
 		select {
 		case <-time.After(time.Second * 30):
-			fmt.Println("GetThreadNum 当前生成使用的协程数:", genNum)
-			con, err := readConfig()
+			//获取时间
+			time := time.Now().Format("2006-01-02 15:04:05")
+			fmt.Println(time, " 当前生成使用的协程数:", genNum)
+			con, err := readConfigAll()
 			if err != nil {
 				fmt.Println("读取配置文件失败")
 				return
 			}
 
-			if tmpRate == con.Rate {
+			//比较两个结构体是否相等
+			//如果tmpConfig为空，说明是第一次读取
+			if reflect.DeepEqual(tmpConfig, con) || reflect.DeepEqual(tmpConfig, Config{}) {
+				if reflect.DeepEqual(tmpConfig, Config{}) {
+					tmpConfig = con
+				}
 				continue
 			}
-			tmpRate = con.Rate
 
-			threadNum := int(math.Floor(float64(CPUNum-1) * con.Rate))
-			needNum := threadNum - genNum
-			fmt.Println("DynamicSetThreadNum 当前生成地址的协程数:", genNum)
-			fmt.Printf("DynamicSetThreadNum 本次需要生成线程数:%d,还需生成%d\n", threadNum, needNum)
-
-			if needNum > 0 {
-				fmt.Println("线程数不足，开始创建新线程")
-				for i := 0; i < needNum; i++ {
-					genNum++
-					go createWallet(con, threadNumChan)
-				}
-			} else if needNum < 0 {
-				for i := 0; i > needNum; i-- {
+			fmt.Println("配置文件发生变化")
+			threadNum := int(math.Floor(float64(CPUNum-1) * con.LocalConfig.Rate))
+			if !reflect.DeepEqual(tmpConfig.RemoteConfig, con.RemoteConfig) {
+				//停止所有协程
+				for genNum > 0 {
 					genNum--
 					threadNumChan <- struct{}{}
 				}
+
+				for i := 0; i < threadNum; i++ {
+					genNum++
+					go createWallet(con, threadNumChan)
+				}
 			}
+			if tmpConfig.LocalConfig != con.LocalConfig {
+				needNum := threadNum - genNum
+				fmt.Printf("DynamicSetThreadNum 本次需要生成协程数: %d,还需生成: %d\n", threadNum, needNum)
+
+				if needNum > 0 {
+					for i := 0; i < needNum; i++ {
+						genNum++
+						go createWallet(con, threadNumChan)
+					}
+				} else if needNum < 0 {
+					for i := 0; i > needNum; i-- {
+						genNum--
+						threadNumChan <- struct{}{}
+					}
+				}
+			}
+			go contrastConfig(tmpConfig, con)
+			tmpConfig = con
 		}
 	}
 }
 
-func createWallet(con config, threadNumChan <-chan struct{}) {
+func createWallet(con Config, threadNumChan <-chan struct{}) {
 	var f *os.File
 	f, _ = os.OpenFile(filename, os.O_APPEND, 0666) //打开文件
 	defer f.Close()
-	strLength := con.Continuous
+	strLength := con.RemoteConfig.Continuous
 	for {
 		select {
 		case <-threadNumChan:
@@ -128,7 +147,7 @@ func createWallet(con config, threadNumChan <-chan struct{}) {
 		if strings.Count(endstr, string(endstr[0])) >= strLength {
 			isGood = true
 		}
-		for _, valueStr := range con.DreamAddressSubstr {
+		for _, valueStr := range con.RemoteConfig.DreamAddressSubstr {
 			//后缀是valueStr
 			if strings.HasSuffix(address, valueStr) {
 				isGood = true
@@ -138,7 +157,7 @@ func createWallet(con config, threadNumChan <-chan struct{}) {
 		if isGood {
 			mutex.Lock()
 			fmt.Println(address)
-			go sendMessageBybark("生成一个Address", address, con.BarkUrl, con.BarkKey)
+			go sendMessageBybark("生成一个Address", address, con.LocalConfig.BarkUrl, con.LocalConfig.BarkKey)
 			privateKeyBytes := crypto.FromECDSA(privateKey)
 			//fmt.Println(hexutil.Encode(privateKeyBytes)[2:])
 			f.WriteString(address)
@@ -148,39 +167,6 @@ func createWallet(con config, threadNumChan <-chan struct{}) {
 			f.WriteString("\n")
 			f.Sync()
 			mutex.Unlock()
-		}
-
-	}
-}
-
-func checkFileIsExist(filename string) error {
-	if _, err := os.Stat(filename); os.IsNotExist(err) {
-		return err
-	}
-	return nil
-}
-
-func sendMessageBybark(title, mess, barkUrl, barkKey string) {
-	if barkUrl == "" || barkKey == "" {
-		return
-	}
-	var data = []byte(`{"body":"` + mess + `","device_key":"` + barkKey + `","title":"` + title + `"}`)
-	response, err := http.Post(barkUrl, "application/json; charset=utf-8",
-		strings.NewReader(string(data)))
-	if err != nil {
-		fmt.Println("failed to post", err)
-	} else {
-		defer func(Body io.ReadCloser) {
-			err := Body.Close()
-			if err != nil {
-				fmt.Println("failed to close response body", err)
-			}
-		}(response.Body)
-		body, err := ioutil.ReadAll(response.Body)
-		if err != nil {
-			fmt.Println("failed to read response body", err)
-		} else {
-			fmt.Println(string(body))
 		}
 	}
 }
